@@ -5,10 +5,11 @@ use base 'Exporter';
 use List::Util qw/shuffle/;
 use Carp qw/croak carp/;
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 our %EXPORT_TAGS = (
 	str => [qw/str_crossover str_mutate str_agreement str_random/],
+	arr => [qw/arr_crossover arr_mutate arr_agreement arr_random/],
 );
 our @EXPORT_OK = map { @$_ } values %EXPORT_TAGS;
 
@@ -84,6 +85,84 @@ sub str_random {
 	return join '', map { $alphabet->[ rand @$alphabet ] } 1 .. $length;
 }
 
+##########################################
+
+sub arr_crossover {
+	my ($a1_ref, $a2_ref, $n_point) = @_;
+	$n_point ||= 2;
+	
+	my @a1 = @$a1_ref;
+	my @a2 = @$a2_ref;
+
+	my $len = @a1;
+
+	croak "Can't do ${n_point}-point crossover on length $len array"
+		if $n_point >= $len;
+
+	## this allows for duplication of indices. maybe a fixme
+
+	my @points = sort { $a <=> $b } map { int(rand $len) } 1 .. $n_point;
+	push @points, $len if $n_point % 2;
+
+	for (0 .. @points/2 - 1) {
+		my ($x, $y) = @points[2*$_, 2*$_+1];
+		my @tmp = @a1[$x .. $y];
+		@a1[$x .. $y] = @a2[$x .. $y];
+		@a2[$x .. $y] = @tmp;
+	}
+	
+	return (\@a1, \@a2);
+}
+
+sub arr_agreement {
+	my ($a1, $a2) = @_;
+
+	my $tally = 0;
+	for (0 .. $#{$a1}) {
+		$tally++ if $a1->[$_] eq $a2->[$_];
+	}
+
+	return $tally;
+}
+
+sub arr_mutate {
+	my ($arr_ref, $n, $alphabet) = @_;
+	$n        ||= 1;
+	$alphabet ||= [0,1];
+	my @arr     = @$arr_ref;
+	
+	croak "Invalid alphabet"
+		unless ref $alphabet eq 'ARRAY' and @$alphabet > 1;
+
+	my $len            = @arr;
+	my @mutate_indices = ();
+	
+	if ($n < 1) {  ## probabalistic mutation
+		@mutate_indices = map { rand() < $n ? $_ : () } 0 .. $len-1;
+	} else {
+		## could just roll my own algorithm to randomly choose $n items, but
+		## List::Util is XS and much faster even to shuffle the whole array
+		## as long as the alphabet isn't large (in the thousands)
+		
+		@mutate_indices = (shuffle 0 .. $len-1 )[ 0 .. $n-1 ];
+	}
+	
+	for my $idx (@mutate_indices) {
+		my $char = $arr[$idx];
+		my @different = grep { $char ne $_ } @$alphabet;
+		
+		$arr[$idx] = $different[ int(rand @different) ];
+	}
+	
+	return \@arr;
+}
+
+sub arr_random {
+	my ($length, $alphabet) = @_;
+	$alphabet ||= [0,1];
+
+	return [ map { $alphabet->[ rand @$alphabet ] } 1 .. $length ];
+}
 
 ##########################################
 ##########################################
@@ -98,53 +177,84 @@ algorithms.
 
 =head1 SYNOPSIS
 
-    use Algorithm::Evolve::Util qw/:str/;
+    use Algorithm::Evolve::Util ':str';
+    use Algorithm::Evolve::Util ':arr';
 
 =head1 SYNTAX
 
-At the moment, this module only provides string-mangling utilities. They can 
-all be imported with the use argument ':str'.
+At the moment, this module only provides string- and array-mangling utilities.
+They can be imported with the use arguments ':str' and ':arr' respectively.
+
+In the following descriptions, a B<gene> refers to either a string or an
+array reference. A position in the gene refers to a single character for string
+genes and an array element for array genes.
 
 =over 4
 
-=item C< str_crossover( $string1, $string2 [, $n ] ) >
+=item C< str_crossover( $string1, $string2 [, $N ] ) >
 
-Performs a random $n-point crossover between two strings, and returns the two
-resulting children. $n defaults to 2. The two inputs should be the same length,
-although this is not enforced. $n must be also less than the length of the
-strings.
+=item C< arr_crossover( \@array1, \@array2 [, $N ] ) >
 
-If you are unfamiliar with the string crossover operation, try examining sample
-outputs for input strings of C<'a' x 20> and C<'b' x 20>.
+Returns a random N-point crossover between the two given genes. C<$N> defaults
+to 2. The two inputs should be the same length, although this is not enforced.
+C<$N> must be also less than the size of the genes.
+
+If you are unfamiliar with the crossover operation, it works like this: Lay
+down the two genes on top of each other. Pick N positions at random, and cut
+both genes at each position. Now swap every other pair of segments, and tape
+the genes back up. So one possible 2-point crossover on the string genes
+C<aaaaaa> and C<bbbbbb> would produce the two genes C<abbaaa> and C<baabbb>
+(the two "cuts" here were after the 1st and 3rd positions).
 
 =item C< str_agreement( $string1, $string2 ) >
 
-Returns the number of characters in which the two strings agree. Does not
-enforce that the strings have the same length, even though the result is
-somewhat meaningless in that case.
+=item C< arr_agreement( \@array1, \@array2 ) >
+
+Returns the number of positions in which the two genes agree. Does not enforce
+that they have the same size, even though the result is somewhat meaningless
+in that case.
+
+In array genes, the comparison of elements is done with C<eq>.
 
 =item C< str_mutate( $string1 [, $num [, \@alphabet ]] ) >
 
-Mutates the string according to the given alphabet (defaulting to {0,1}). If
-$num is less than one, it performs I<probabilistic> mutation, with each
-character having a $num probability of being mutated. If $num is greater than
-or equal to 1, it performs I<N-point mutation>: exactly $num characters are
-chosen at random from the string and mutated. $num defaults to 1. Returns the
-modified string.
+=item C< arr_mutate( \@array1 [, $num [, \@alphabet ]] ) >
 
-A mutation will always change the character in question, i.e., an
-'a' will never be chosen to replace an existing 'a' during a mutation.
+Returns a random mutation of the gene according to the given alphabet
+(defaulting to {0,1}). If C<$num> is less than 1, it performs I<probabilistic
+mutation>, with each position having a C<$num> probability of being mutated. If
+C<$num> is greater than or equal to 1, it performs I<N-point mutation>: exactly
+C<$num> positions are chosen at random and mutated. C<$num> defaults to 1.
 
-=item C< str_random( $length [, \@alphabet ] ) >
+A mutation will always change the character in question: an 'a' will never be
+chosen to replace an existing 'a' in a mutation. The following identity holds
+for N-point mutations:
 
-Returns a random string of the specified length over the specified alphabet,
-defaulting to {0,1}.
+  str_agreement( str_mutate($some_string, $n, \@alph), $some_string )
+    == length($some_string) - $n;
+
+The alphabet for a string gene should consist of only single characters unless
+you know what you're doing. Conceivably, you can implement an 'add' and 'remove'
+mutation by using an alphabet that contains strings with length != 1. But this
+seems a little hackish to me. For array genes, the alphabet can be just about
+anything meaningful to you.
+
+=item C< str_random( $size [, \@alphabet ] ) >
+
+=item C< arr_random( $size [, \@alphabet ] ) >
+
+Returns a random gene of the given size over the given alphabet, defaulting to
+{0,1}.
 
 =back
 
 =head1 SEE ALSO
 
-L<Algorithm::Evolve>
+L<Algorithm::Evolve|Algorithm::Evolve>
+
+F<StringEvolver.pm> in the F<examples/> directory uses the utilities in
+Algorithm::Evolve::Util to implement a completely generic simple string
+evolver critter class in very few lines of code.
 
 =head1 AUTHOR
 

@@ -1,9 +1,17 @@
-Implement full support for comparison-only populations
-  (not just fitness function)
-
-Add gladitorial selection/replacement
-
 Add double tournament selection
 
-Write tests
+Allow fitness to not be memo-ized (re-evaulate every generation)
 
+Write more tests
+
+Support for freezing state using Storable or something
+
+Non-aligned crossover
+
+Better POD for EA-n00bs ;)
+
+Rewrite the slow stuff in C, doesn't that sound fun?
+
+Profiling is difficult because many subs are anonymous. Come up with something
+clever to fix this. I still want %REPLACEMENT and %SELECTION like they are
+so folks can easily add extras from any BEGIN block

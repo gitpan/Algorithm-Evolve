@@ -5,9 +5,9 @@ use Carp qw/croak carp/;
 use List::Util qw/shuffle/;
 
 our (%SELECTION, %REPLACEMENT);
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
-my $rand_max = (1 << 31); ## feh, that's big enough!
+my $rand_max = (1 << 31); ## close enough
 
 ###########################
 
@@ -54,11 +54,10 @@ sub _validate_args {
 sub start {
 	my $pop = shift;
 	$pop->_initialize;
-	
-	my $select = $SELECTION{ $pop->selection };
-	my $replace = $REPLACEMENT{ $pop->replacement };
-	
+		
 	until ($pop->is_suspended) {
+		my $select = $SELECTION{ $pop->selection };
+		my $replace = $REPLACEMENT{ $pop->replacement };
 	
 		my @parent_indices = $select->($pop, $pop->parents_per_gen);		
 		my @parents = @{$pop->critters}[ @parent_indices ];
@@ -105,6 +104,8 @@ sub resume {
 
 sub best_fit {
 	my $pop = shift;
+	carp "It's hard to pick the most fit when fitness is relative!"
+		unless ($pop->sort_method eq 'fitness');
 	$pop->critters->[-1];
 }
 
@@ -113,6 +114,30 @@ sub avg_fitness {
 	my $sum = 0;
 	$sum += $_ for @{$pop->fitnesses};
 	return $sum / @{$pop->fitnesses};
+}
+
+sub selection {
+	my ($pop, $method) = @_;
+	return $pop->{selection} unless defined $method;
+	$pop->{selection} = $method;
+	$pop->_validate_args;
+	return $pop->{selection};
+}
+
+sub replacement {
+	my ($pop, $method) = @_;
+	return $pop->{replacement} unless defined $method;
+	$pop->{replacement} = $method;
+	$pop->_validate_args;
+	return $pop->{replacement};
+}
+
+sub parents_children_per_gen {
+	my ($pop, $p, $c) = @_;
+	return unless defined $p and defined $c;
+	$pop->{parents_per_gen} = $p;
+	$pop->{children_per_gen} = $c;
+	$pop->_validate_args;
 }
 
 ####################
@@ -165,10 +190,10 @@ sub _sort_critters {
 
 	} else {
 
-		@{$pop->critters} = 
-			sort { $pop->critter_class->compare($a, $b) } @{$pop->critters};
-		carp "Proceed at your own risk -- using comparison sorting"
-			unless $sort_warn++;
+#		@{$pop->critters} = 
+#			sort { $pop->critter_class->compare($a, $b) } @{$pop->critters};
+#		carp "Proceed at your own risk -- using comparison sorting"
+#			unless $sort_warn++;
 
 	}
 
@@ -214,11 +239,15 @@ sub _pick_n_indices_weighted {
 
 $SELECTION{roulette} = sub {
 	my ($pop, $num) = @_;
+	croak "Can't use roulette selection/replacement without a fitness function"
+		unless ($pop->sort_method eq 'fitness');
 	_pick_n_indices_weighted( $num, [ @{$pop->fitnesses} ] );
 };
 
 $REPLACEMENT{roulette} = sub {
 	my ($pop, $num) = @_;
+	croak "Can't use roulette selection/replacement without a fitness function"
+		unless ($pop->sort_method eq 'fitness');
 	_pick_n_indices_weighted( $num, [ map { 1/($_+1) } @{$pop->fitnesses} ] );
 };
 
@@ -226,30 +255,38 @@ $REPLACEMENT{roulette} = sub {
 	
 $SELECTION{rank} = sub {
 	my ($pop, $num) = @_;
-	_pick_n_indices_weighted( $num, [ 1 .. @{$pop->critters} ] );
+	croak "Can't use rank selection/replacement without a fitness function"
+		unless ($pop->sort_method eq 'fitness');
+	_pick_n_indices_weighted( $num, [ 1 .. $pop->size ] );
 };
 	
 $REPLACEMENT{rank} = sub {
 	my ($pop, $num) = @_;
-	_pick_n_indices_weighted( $num, [ reverse(1 .. @{$pop->critters}) ] );
+	croak "Can't use rank selection/replacement without a fitness function"
+		unless ($pop->sort_method eq 'fitness');
+	_pick_n_indices_weighted( $num, [ reverse(1 .. $pop->size) ] );
 };
 
 ###############
 
 $REPLACEMENT{random} = $SELECTION{random} = sub {
 	my ($pop, $num) = @_;
-	_pick_n_indices_weighted( $num, [ (1) x @{$pop->critters} ] );
+	_pick_n_indices_weighted( $num, [ (1) x $pop->size ] );
 };
 
 ################
 
 $SELECTION{absolute} = sub {
 	my ($pop, $num) = @_;
+	croak "Can't use absolute selection/replacement without a fitness function"
+		unless ($pop->sort_method eq 'fitness');
 	return ( $pop->size - $num .. $pop->size - 1 );
 };
 
 $REPLACEMENT{absolute} = sub {
 	my ($pop, $num) = @_;
+	croak "Can't use absolute selection/replacement without a fitness function"
+		unless ($pop->sort_method eq 'fitness');
 	return ( 0 .. $num-1 );
 };
 
@@ -279,8 +316,8 @@ $SELECTION{tournament} = sub {
 		my $end = $beg + $t_size - 1;
 		
 		## the critters are already sorted by fitness within $pop->critters -- 
-		## so we can sort them by their index number, without having to call the
-		## fitness function again.
+		## so we can sort them by their index number, without having to call
+		## the fitness function again.
 
 		my @sorted_group_indices = sort { $b <=> $a } @indices[ $beg .. $end ];
 		push @tournament_choose_indices,  @sorted_group_indices[0,1];
@@ -302,14 +339,78 @@ $REPLACEMENT{tournament} = sub {
 
 #######################################
 
+my @gladitorial_replace_indices;
+my $gladitorial_warn = 0;
+my $gladitorial_attempts_warn = 0;
+
+$SELECTION{gladitorial} = sub {
+	my ($pop, $num) = @_;
+	
+	carp "Gladitorial selection without gladitorial replacement is insane"
+		unless ($pop->replacement eq 'gladitorial' or $gladitorial_warn++);
+
+	my $max_attempts = $pop->{max_gladitorial_attempts} || 100;
+	my $fetched = 0;
+	my $attempts = 0;
+	my @available_indices = 0 .. $#{$pop->critters};
+
+	@gladitorial_replace_indices = ();
+	my @select_indices;
+	
+	while ($fetched != $pop->parents_per_gen) {
+		my ($i1, $i2) = (shuffle @available_indices)[0,1];
+
+		if ($attempts++ > $max_attempts) {
+			carp "Max gladitorial attempts exceeded -- choosing at random"
+				unless $gladitorial_attempts_warn++;
+			my $remaining = $pop->parents_per_gen - @select_indices;
+
+			push @gladitorial_replace_indices, 
+				(shuffle @available_indices)[0 .. $remaining-1];
+			push @select_indices,
+				(shuffle @available_indices)[0 .. $remaining-1];
+
+			last;							
+		}
+	
+		my $cmp = $pop->critter_class->compare(
+			@{$pop->critters}[$i1, $i2]
+		);
+		
+		next if $cmp == 0;
+			
+		my ($select, $remove) = $cmp > 0 ? ($i1,$i2) : ($i2,$i1);
+		
+		@available_indices = 
+			grep { $_ != $remove } @available_indices;
+		push @gladitorial_replace_indices, $remove;
+		push @select_indices, $select;
+		$fetched++;	
+	}
+
+	return @select_indices;
+};
+
+$REPLACEMENT{gladitorial} = sub {
+	my ($pop, $num) = @_;
+	
+	croak "parents_per_gen must equal children_per_gen with gladitorial selection"
+		if @gladitorial_replace_indices != $num;
+	croak "Can't use gladitorial replacement without gladitorial selection"
+		unless ($pop->selection eq 'gladitorial');
+				
+	return @gladitorial_replace_indices;
+};
+
+#######################################
+
 BEGIN {
 	## creates very basic readonly accessors - very loosely based on an
 	## idea by Juerd in http://perlmonks.org/index.pl?node_id=222941
 
-	my @fields = qw/critters replacement selection size generations
-	                callback critter_class random_seed is_suspended
-	                sort_method fitnesses parents_per_gen 
-	                children_per_gen children_per_parent/;
+	my @fields = qw/critters size generations callback critter_class
+	                random_seed is_suspended sort_method fitnesses
+	                parents_per_gen children_per_gen children_per_parent/;
 
 	no strict 'refs';
 	for my $f (@fields) { 
@@ -337,9 +438,10 @@ evolutionary algorithms
     sub callback {
         my $pop = shift;
 
-        ## some stats every 10 generations   
+        ## Output some stats every 10 generations   
         print $pop->avg_fitness, $/ unless $pop->generations % 10;
         
+        ## Stop after 2000 generations
         $pop->suspend if $pop->generations >= 2000;
     }
     
@@ -355,37 +457,62 @@ evolutionary algorithms
     
     $pop->start;
     
-    ## print out final population statistics
+    ## Print out final population statistics, cleanup, etc..
 
 =cut
 
 =head1 DESCRIPTION
 
-This module contains a class-based framework for executing evolutionary 
-algorithms. The goal is to allow evolution of any type of object conceivable 
-with relative ease, be it a simple string, an array, a hash of arrays, a 
-directed graph object using a CPAN module, or anything else.
+This module is intended to be a useful tool for quick and easy implementation
+of evolutionary algorithms. It aims to be flexible, yet simple. For this
+reason, it is not a comprehensive implementation of all possible evolutionary
+algorithm configurations. The flexibility of Perl allows the evolution of
+any type of object conceivable: a simple string or array, a deeper structure
+like a hash of arrays, or even a complex object like graph object from another
+CPAN module, etc. 
 
-The configurable aspects of an evolutionary algorithm can be split up into two 
-categories: those aspects closely tied to the object representation (fitness 
-function, crossover and mutation operators), and those that do not depend at 
-all on the object representation (selection and replacement methods, population 
-size, number of mating events). The former group of options is implemented by 
-the user and abstracted to class of evolvable objects, while the latter is 
-handled by Algorithm::Evolve using simple configuration switches.
+It's also worth mentioning that evolutionary algorithms are generally very
+CPU-intensive. There are a great deal of calls to C<rand()> and a lot of
+associated floating-point math. If you want a lightning-fast framework, then
+searching CPAN at all is probably a bad place to start. However, this doesn't
+mean that I've ignored efficiency. The fitness function is often the biggest
+bottleneck.
 
+=head2 Framework Overview
 
+The configurable parts of an evolutionary algorithm can be split up into two 
+categories:
 
+=over
+
+=item Dependent on the internal representation of genes to evolve:
+
+These include fitness function, crossover and mutation operators. For example,
+evolving string genes requires a different mutation operator than evolving
+array genes.
+
+=item Independent of representation:
+
+These include selection and replacement methods, population size, number of
+mating events, etc.
+
+=back
+
+In Algorithm::Evolve, the first group of options is implemented by the user 
+for maximum flexibility. These functions are abstracted to class of evolvable
+objects (a B<critter class> in this document). The module itself handles the
+representation-independent parts of the algorithm using simple configuration
+switches and methods.
 
 =head1 USAGE
 
-=head2 Designing a class of critter objects
+=head2 Designing a class of critter objects (interface specification)
 
 Algorithm::Evolve maintains a population of critter objects to be evolved. You 
 may evolve any type of objects you want, provided the class supplies the 
 following methods:
 
-=over 4
+=over
 
 =item C<< Class->new() >>
 
@@ -407,14 +534,23 @@ randomly modify the genes of the critter. Its return value is ignored.
 =item C<< $critter->fitness() >>
 
 This method will also be called as an instance method, with no arguments. It 
-should return the critter's fitness measure within the problem space. This 
-should always be a  nonnegative number. This method need not be memo-ized, as 
+should return the critter's fitness measure within the problem space, which
+should always be a nonnegative number. This method need not be memo-ized, as 
 it is only called once per critter by Algorithm::Evolve.
+
+This method may be omitted only if using gladitorial selection/replacement
+(see below).
+
+=item C<< Class->compare( $obj1, $obj2 ) >>
+
+This method is used for L</co-evolution> with the gladitorial selection method.
+It should return a number less than zero if $obj1 is "better," 0 if the two
+are equal, or a number greater than zero if $obj2 is "better." 
 
 =back
 
-You may also want to use the C<DESTROY> method as a hook for when critters are 
-removed from the population.
+You may also want to use the C<DESTROY> method as a hook for detecting when
+critters are removed from the population.
 
 See the F<examples> directory for an example of a unimodal string evolver that 
 uses a very lightweight blessed string-ref implementation. Also, take a look at 
@@ -426,7 +562,7 @@ implementing a critter class.
 
 =head2 Algorithm::Evolve population interface
 
-=over 4
+=over
 
 =item C<< $pop = Algorithm::Evolve->new( option => value, ... ) >>
 
@@ -438,27 +574,68 @@ evolved. This class should already be C<use>'d or C<require>'d by your code.
 
 B<selection> and B<replacement>, the type of selection and replacement methods 
 to use. Available methods for both currently include: 
-  C<tournament>,
-  C<random>,
-  C<rank>,
-  C<roulette>, and
-  C<absolute>.
-You may mix and match selection and replacement methods, the only exception 
-being C<tournament> which can only be used as both selection and replacement 
-method.
 
-B<tournament_size>, only required if you choose tournament selection/
-replacement. Algorithm::Evolve only currently performs single-tournament 
-selection/replacement.
+=over
+
+=item *
+
+C<tournament>: Create tournaments groups of the desired size (see below).
+The two highest-fitness group members get to breed, and the two lowest-fitness
+members get replaced (This is also called single-tournament selection). Must be
+specified for both selection and replacement.
+
+=item *
+
+C<gladitorial>: See below under L</co-evolution>. Must be used for both
+selection and replacement.
+
+=item *
+
+C<random>: Choose critters completely at random.
+
+=item *
+
+C<roulette>: Choose critters with weighted probability based on their
+fitness. For selection, each critter's weight is its fitness. For replacement,
+each critter's weight is 1/(f+1).
+
+=item *
+
+C<rank>: Choose critters with weighted probability based on their rank. For
+selection, the most-fit critter's weight is C<< $pop->size >>, while the 
+least-fit critter's weight is 1. For replacement, the weights are in reverse
+order.
+
+=item *
+
+C<absolute>: Choose the N most-fit critters for selection, or the N least-fit
+for replacement.
+
+=back
+
+You may mix and match different kinds of selection and replacement methods. The
+only exceptions are C<tournament> and C<gladitorial>, which must be used as
+both selection and replacement method.
+
+
+
+B<tournament_size>, only required if you choose tournament 
+selection/replacement. Should be at least 4 unless you know what you're doing.
+
+B<max_gladitorial_attempts>: Because comparisons in gladitorial selection may
+result in a tie, this is the number of ties permitted before giving up and
+picking critters at random instead during that breeding event. The first time
+this occurs, the module will C<carp> a message.
 
 B<parents_per_gen> and B<children_per_gen> control the number of breedings per 
 generation. children_per_gen must be a multiple of parents_per_gen. 
 parents_per_gen must also be an even number. Each pair of parents selected in a 
 generation will produce the same number of children, calling the crossover 
 method in the critter class as many times as necessary. Basically, each 
-selected parent gets a gene copy count of children_per_gen/parents_per_gen. The
-exception is in tournament selection, where children_per_gen must be equal to
-parents_per_gen. The number of tournaments each generation is then equal to
+selected parent gets a gene copy count of children_per_gen/parents_per_gen. 
+
+In tournament and gladitorial selection, children_per_gen must be equal to
+parents_per_gen. The number of tournaments each generation is equal to
 parents_per_gen/2.
 
 B<size>, the number of critters to have in the population.
@@ -476,44 +653,75 @@ Algorithm::Evolve will generate a random seed that you can retrieve.
 
 
 
-=item C<< $pop->run >>
+=item C<< $pop->run() >>
 
 Begins execution of the algorithm, and returns when the population has been 
 C<suspend>'ed.
 
-=item C<< $pop->suspend >>
+=item C<< $pop->suspend() >>
 
 Call this method from within the callback function to stop the algorithm's 
 iterations and return from the C<run> method.
 
-=item C<< $pop->resume >>
+=item C<< $pop->resume() >>
 
 Start up the algorithm again after being C<suspend>'ed.
 
-=item C<< $pop->generations, $pop->avg_fitness, $pop->best_fit >>
+=item C<< $pop->generations() >>
+
+=item C<< $pop->avg_fitness() >>
+
+=item C<< $pop->best_fit() >>
 
 These return basic information about the current state of the population. You 
 probably will use these methods from within the callback sub. The best_fit 
 method returns the most-fit critter in the population.
 
-=item C<< $pop->critters >>
+=item C<< $pop->critters() >>
 
 Returns a reference to an array containing all the critters in the population, 
 sorted by fitness. You can use this to iterate over the entire population, but 
 please don't modify the array.
 
-=item C<< $pop->random_seed >>
+=item C<< $pop->random_seed() >>
 
 Returns the random seed that was used for this execution.
+
+=item C<< $pop->selection( [ $new_method ] ) >>
+
+=item C<< $pop->replacement( [ $new_method ] ) >>
+
+Fetch or change the selection/replacement method while the algorithm is
+running.
+
+=item C<< $pop->parents_children_per_gen($parents, $children) >>
+
+Changes the parents_per_gen and children_per_gen attributes of the population
+while the algorithm is running. Both are changed at once because the latter
+must always be a multiple of the former.
 
 =back
 
 
+=head2 Co-Evolution
 
+When there is no absolute measure of fitness for a problem, and a critter's
+fitness depends on the other memebers of the population, this is called
+B<co-evolution>. A good example of such a problem is rock-paper-scissors. If
+we were to evolve strategies for this game, any strategy's success would be
+dependent on what the rest of the population is doing.
+
+To perform such an evolutionary algorithm, implement the C<compare> method
+in your critter class and choose gladitorial selection and replacement. 
+Gladitorial selection/replacement chooses random pairs of critters and
+C<compare>s them. If the result is not a tie, the winner receives reproduction
+rights, and the loser is chosen for replacement. This happens until the
+desired number of parents have been selected, or until a timeout occurs.
 
 =head1 SEE ALSO
 
-L<Algorithm::Evolve::Util>
+L<Algorithm::Evolve::Util|Algorithm::Evolve::Util>, the F<examples/>
+directory.
 
 =head1 AUTHOR
 
