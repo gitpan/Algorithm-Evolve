@@ -1,0 +1,10 @@
+Changes
+MANIFEST
+Makefile.PL
+README
+TODO
+lib/Algorithm/Evolve.pm
+lib/Algorithm/Evolve/Util.pm
+examples/StringEvolver.pm
+examples/string_evolver.pl
+test.pl

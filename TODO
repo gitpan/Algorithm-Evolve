@@ -1,0 +1,9 @@
+Implement full support for comparison-only populations
+  (not just fitness function)
+
+Add gladitorial selection/replacement
+
+Add double tournament selection
+
+Write tests
+
