@@ -4,7 +4,7 @@ Allow fitness to not be memo-ized (re-evaulate every generation)
 
 Write more tests
 
-Support for freezing state using Storable or something
+Support for freezing state using Storable or Data::Dumper or something
 
 Non-aligned crossover
 
@@ -12,6 +12,4 @@ Better POD for EA-n00bs ;)
 
 Rewrite the slow stuff in C, doesn't that sound fun?
 
-Profiling is difficult because many subs are anonymous. Come up with something
-clever to fix this. I still want %REPLACEMENT and %SELECTION like they are
-so folks can easily add extras from any BEGIN block
+Consider some way of combining A::E::Util, StringEvolver, ArrayEvolver

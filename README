@@ -1,18 +1,20 @@
-Algorithm/Evolve version 0.01
+Algorithm/Evolve version 0.03
 =============================
 
-This module contains a class-based framework for executing evolutionary
-algorithms. The goal is to allow evolution of any type of object conceivable
-with relative ease, be it a simple string, an array, a hash of arrays, a 
-directed graph object using a CPAN module, or anything else.
+This module is intended to be a useful tool for quick and easy implementation
+of evolutionary algorithms. It aims to be flexible, yet simple. For this
+reason, it is not a comprehensive implementation of all possible evolutionary
+algorithm configurations. The flexibility of Perl allows the evolution of
+any type of object conceivable: a simple string or array, a deeper structure
+like a hash of arrays, or even a complex object like graph object from another
+CPAN module, etc. 
 
-The configurable aspects of an evolutionary algorithm can be split up into two 
-categories: those aspects closely tied to the object representation (fitness 
-function, crossover and mutation operators), and those that do not depend at 
-all on the object representation (selection and replacement methods, population
-ize, number of mating events). The former group of options is implemented by 
-the user and abstracted to class of evolvable objects, while the latter is 
-handled by Algorithm::Evolve using simple configuration switches.
+It's also worth mentioning that evolutionary algorithms are generally very
+CPU-intensive. There are a great deal of calls to C<rand()> and a lot of
+associated floating-point math. If you want a lightning-fast framework, then
+searching CPAN at all is probably a bad place to start. However, this doesn't
+mean that I've ignored efficiency. The fitness function is often the biggest
+bottleneck.
 
 INSTALLATION
 
